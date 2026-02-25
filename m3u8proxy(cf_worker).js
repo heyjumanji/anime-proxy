@@ -14,9 +14,11 @@ async function handleRequest(request) {
   return new Response("Not Found", { status: 404 });
 }
 
+const allowedOrigins = typeof ALLOWED_ORIGINS !== "undefined" ? ALLOWED_ORIGINS.split(",") : ["*"];
+
 const options = {
   originBlacklist: [],
-  originWhitelist: ["*"],
+  originWhitelist: allowedOrigins,
 };
 
 const isOriginAllowed = (origin, options) => {
@@ -41,7 +43,12 @@ const isOriginAllowed = (origin, options) => {
 async function handleM3U8Proxy(request) {
   const { searchParams } = new URL(request.url);
   const targetUrl = searchParams.get("url");
-  const headers = JSON.parse(searchParams.get("headers") || "{}");
+  let headers = {};
+  try {
+    headers = JSON.parse(searchParams.get("headers") || "{}");
+  } catch (e) {
+    // ignore
+  }
   const origin = request.headers.get("Origin") || "";
 
   if (!isOriginAllowed(origin, options)) {
@@ -71,24 +78,38 @@ async function handleM3U8Proxy(request) {
     const newLines = [];
 
     lines.forEach((line) => {
+      if (!line.trim()) {
+        newLines.push(line);
+        return;
+      }
       if (line.startsWith("#")) {
         if (line.startsWith("#EXT-X-KEY:")) {
-          const regex = /https?:\/\/[^\""\s]+/g;
-          const keyUrl = regex.exec(line)?.[0] ?? "";
-          const newUrl = `/ts-proxy?url=${encodeURIComponent(
-            keyUrl
-          )}&headers=${encodeURIComponent(JSON.stringify(headers))}`;
-          newLines.push(line.replace(keyUrl, newUrl));
+          const regex = /URI=(?:"([^"]+)"|([^",]+))/;
+          const match = regex.exec(line);
+          const keyUrl = match ? match[1] || match[2] : "";
+          if (keyUrl) {
+            const keyUri = new URL(keyUrl, targetUrl);
+            const newUrl = `/ts-proxy?url=${encodeURIComponent(
+              keyUri.href
+            )}&headers=${encodeURIComponent(JSON.stringify(headers))}`;
+            newLines.push(line.replace(keyUrl, newUrl));
+          } else {
+            newLines.push(line);
+          }
         } else {
           newLines.push(line);
         }
       } else {
-        const uri = new URL(line, targetUrl);
-        newLines.push(
-          `/ts-proxy?url=${encodeURIComponent(
-            uri.href
-          )}&headers=${encodeURIComponent(JSON.stringify(headers))}`
-        );
+        try {
+          const uri = new URL(line.trim(), targetUrl);
+          newLines.push(
+            `/ts-proxy?url=${encodeURIComponent(
+              uri.href
+            )}&headers=${encodeURIComponent(JSON.stringify(headers))}`
+          );
+        } catch (e) {
+          newLines.push(line);
+        }
       }
     });
 
@@ -108,7 +129,12 @@ async function handleM3U8Proxy(request) {
 async function handleTsProxy(request) {
   const { searchParams } = new URL(request.url);
   const targetUrl = searchParams.get("url");
-  const headers = JSON.parse(searchParams.get("headers") || "{}");
+  let headers = {};
+  try {
+    headers = JSON.parse(searchParams.get("headers") || "{}");
+  } catch (e) {
+    // ignore
+  }
   const origin = request.headers.get("Origin") || "";
 
   if (!isOriginAllowed(origin, options)) {
